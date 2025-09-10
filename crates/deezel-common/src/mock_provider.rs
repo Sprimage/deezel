@@ -678,6 +678,17 @@ impl KeystoreProvider for MockProvider {
         Ok(vec![])
     }
     
+    async fn get_address(&self, address_type: &str, _index: u32) -> Result<String> {
+        // Simple mock derivation: support p2tr and return a deterministic fallback for others
+        match address_type {
+            "p2tr" => {
+                let address = Address::p2tr(&self.secp, self.internal_key, None, self.network);
+                Ok(address.to_string())
+            }
+            _ => Ok(format!("mock:{address_type}")),
+        }
+    }
+    
     fn parse_address_range(&self, _range_spec: &str) -> Result<(String, u32, u32)> {
         Ok(("p2tr".to_string(), 0, 10))
     }
@@ -753,6 +764,18 @@ impl DeezelProvider for MockProvider {
         "mock"
     }
     
+    fn get_bitcoin_rpc_url(&self) -> Option<String> {
+        Some("http://localhost:18443".to_string())
+    }
+    
+    fn get_esplora_api_url(&self) -> Option<String> {
+        Some("http://localhost:3002".to_string())
+    }
+    
+    fn get_ord_server_url(&self) -> Option<String> {
+        Some("http://localhost:8081".to_string())
+    }
+    
     async fn initialize(&self) -> Result<()> {
         Ok(())
     }
@@ -780,5 +803,20 @@ impl DeezelProvider for MockProvider {
     ) -> Result<schnorr::Signature> {
         let keypair = Keypair::from_secret_key(&self.secp, &self.secret_key);
         Ok(self.secp.sign_schnorr_with_rng(&sighash, &keypair, &mut rand::thread_rng()))
+    }
+}
+
+#[async_trait(?Send)]
+impl MetashrewProvider for MockProvider {
+    async fn get_height(&self) -> Result<u64> {
+        Ok(800000)
+    }
+
+    async fn get_block_hash(&self, _height: u64) -> Result<String> {
+        Ok("mock_block_hash".to_string())
+    }
+
+    async fn get_state_root(&self, _height: JsonValue) -> Result<String> {
+        Ok("mock_state_root".to_string())
     }
 }

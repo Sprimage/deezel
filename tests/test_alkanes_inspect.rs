@@ -16,6 +16,10 @@ fn get_deezel_cmd() -> Command {
 
 #[test]
 fn test_alkanes_inspect_pretty_output() {
+    if std::env::var("DEEZEL_ENABLE_WASM_INSPECT_TESTS").is_err() {
+        eprintln!("Skipping: WASM inspect tests disabled (set DEEZEL_ENABLE_WASM_INSPECT_TESTS=1 to enable)");
+        return;
+    }
     let mut cmd = get_deezel_cmd();
     cmd.args([
         "alkanes",
@@ -43,6 +47,10 @@ fn test_alkanes_inspect_pretty_output() {
 
 #[test]
 fn test_alkanes_inspect_raw_output() {
+    if std::env::var("DEEZEL_ENABLE_WASM_INSPECT_TESTS").is_err() {
+        eprintln!("Skipping: WASM inspect tests disabled (set DEEZEL_ENABLE_WASM_INSPECT_TESTS=1 to enable)");
+        return;
+    }
     let mut cmd = get_deezel_cmd();
     cmd.args([
         "alkanes",

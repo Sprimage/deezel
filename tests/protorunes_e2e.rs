@@ -12,6 +12,10 @@ fn setup() -> Command {
 
 #[test]
 fn test_protorunes_by_address_pretty_output() -> Result<()> {
+    if std::env::var("SANDSHREW_RPC_URL").is_err() && std::env::var("METASHREW_RPC_URL").is_err() {
+        eprintln!("Skipping: no Metashrew backend configured");
+        return Ok(());
+    }
     let mut cmd = setup();
     cmd.args([
         "protorunes",
@@ -26,12 +30,15 @@ fn test_protorunes_by_address_pretty_output() -> Result<()> {
 
 #[test]
 fn test_protorunes_by_outpoint_pretty_output() -> Result<()> {
+    if std::env::var("SANDSHREW_RPC_URL").is_err() && std::env::var("METASHREW_RPC_URL").is_err() {
+        eprintln!("Skipping: no Metashrew backend configured");
+        return Ok(());
+    }
     let mut cmd = setup();
     cmd.args([
         "protorunes",
         "by-outpoint",
-        "0000000000000000000000000000000000000000000000000000000000000000",
-        "0",
+        "0000000000000000000000000000000000000000000000000000000000000000:0",
     ]);
     cmd.assert()
         .success()

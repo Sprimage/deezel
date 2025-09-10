@@ -65,7 +65,10 @@ fn setup_regtest() -> Result<(BitcoinD, Client, tempfile::TempDir, PathBuf, Stri
 
 #[test]
 fn test_alkanes_execute_regtest_preview() -> Result<()> {
-    env::set_var("BITCOIND_EXE", "/home/ubuntu/alkanes/system/submodules/bitcoin/build/bin/bitcoind");
+    if std::env::var("BITCOIND_EXE").is_err() {
+        eprintln!("Skipping: BITCOIND_EXE not set");
+        return Ok(());
+    }
     let (bitcoind, _client, _temp_dir, keystore_path, deezel_address_str) = setup_regtest()?;
     let keystore_path_str = keystore_path.to_str().unwrap();
 
@@ -101,7 +104,10 @@ fn test_alkanes_execute_regtest_preview() -> Result<()> {
 
 #[test]
 fn test_alkanes_execute_with_mine_and_trace() -> Result<()> {
-    env::set_var("BITCOIND_EXE", "/home/ubuntu/alkanes/system/submodules/bitcoin/build/bin/bitcoind");
+    if std::env::var("BITCOIND_EXE").is_err() {
+        eprintln!("Skipping: BITCOIND_EXE not set");
+        return Ok(());
+    }
     let (bitcoind, client, _temp_dir, keystore_path, deezel_address_str) = setup_regtest()?;
     let keystore_path_str = keystore_path.to_str().unwrap();
 
@@ -152,7 +158,10 @@ fn test_alkanes_execute_with_mine_and_trace() -> Result<()> {
 
 #[test]
 fn test_alkanes_execute_regtest_simulation_preview() -> Result<()> {
-    env::set_var("BITCOIND_EXE", "/home/ubuntu/alkanes/system/submodules/bitcoin/build/bin/bitcoind");
+    if std::env::var("BITCOIND_EXE").is_err() {
+        eprintln!("Skipping: BITCOIND_EXE not set");
+        return Ok(());
+    }
     let (bitcoind, _client, _temp_dir, keystore_path, deezel_address_str) = setup_regtest()?;
     let keystore_path_str = keystore_path.to_str().unwrap();
 
