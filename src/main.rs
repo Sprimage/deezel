@@ -12,6 +12,7 @@ use std::sync::Arc;
 use bitcoin::consensus::deserialize;
 use bitcoin::Transaction;
 use serde_json;
+use deezel_common::alkanes_pb; // for protobuf encoding of simulate request
 
 // Import all necessary modules from the deezel library
 use deezel::{
@@ -111,6 +112,11 @@ enum Commands {
     Esplora {
         #[command(subcommand)]
         command: EsploraCommands,
+    },
+    /// AMM utilities (simulation-only)
+    Amm {
+        #[command(subcommand)]
+        command: AmmCommands,
     },
     /// Build contracts
     BuildContracts,
@@ -400,6 +406,27 @@ enum AlkanesCommands {
     },
 }
 
+/// AMM simulation subcommands
+#[derive(Subcommand)]
+enum AmmCommands {
+    /// List all pools (by factory contract) via simulate
+    GetAllPools {
+        /// Factory alkane ID (format: block:tx)
+        factory_id: String,
+        /// Show raw JSON output
+        #[arg(long)]
+        raw: bool,
+    },
+    /// List all pools with decoded details via simulate
+    AllPoolsDetails {
+        /// Factory alkane ID (format: block:tx)
+        factory_id: String,
+        /// Show raw JSON output
+        #[arg(long)]
+        raw: bool,
+    },
+}
+
 /// Runestone analysis subcommands
 #[derive(Subcommand)]
 enum RunestoneCommands {
@@ -657,6 +684,74 @@ fn parse_contract_id(contract_id: &str) -> Result<(String, String)> {
     }
     
     Ok((parts[0].to_string(), parts[1].to_string()))
+}
+
+/// Parse alkane id (block:tx) into u64s
+fn parse_alkane_id_u64(id: &str) -> Result<(u64, u64)> {
+    let parts: Vec<&str> = id.split(':').collect();
+    if parts.len() != 2 {
+        return Err(anyhow!("Invalid alkane ID format. Expected 'block:tx'"));
+    }
+    let block = parts[0].parse::<u64>().context("Invalid block number in alkane ID")?;
+    let tx = parts[1].parse::<u64>().context("Invalid transaction number in alkane ID")?;
+    Ok((block, tx))
+}
+
+/// Build alkanes_simulate params (contract_id_hex, params_hex)
+fn build_simulate_params(block: u64, tx: u64, params: &str) -> Result<(String, String)> {
+    use protobuf::Message;
+    let mut alkane_id = alkanes_pb::AlkaneId::new();
+    let mut block_u = alkanes_pb::Uint128::new();
+    block_u.lo = block;
+    let mut tx_u = alkanes_pb::Uint128::new();
+    tx_u.lo = tx;
+    alkane_id.block = protobuf::MessageField::some(block_u);
+    alkane_id.tx = protobuf::MessageField::some(tx_u);
+    let mut req = alkanes_pb::BytecodeRequest::new();
+    req.id = protobuf::MessageField::some(alkane_id);
+    let id_hex = format!("0x{}", hex::encode(req.write_to_bytes()?));
+    let params_hex = if params.is_empty() { "0x".to_string() } else { format!("0x{}", hex::encode(params.as_bytes())) };
+    Ok((id_hex, params_hex))
+}
+
+/// Decode factory GET_ALL_POOLS result (count + list of block,tx)
+fn decode_get_all_pools(data_hex: &str) -> Option<(usize, Vec<(u64, u64)>)> {
+    fn strip_0x(s: &str) -> &str { s.strip_prefix("0x").unwrap_or(s) }
+    let clean = strip_0x(data_hex);
+    if clean.len() < 32 { return None; }
+    let mut count_bytes = hex::decode(&clean[0..32]).ok()?;
+    count_bytes.reverse();
+    let count = u128::from_str_radix(&hex::encode(count_bytes), 16).ok()? as usize;
+    let mut pools = Vec::new();
+    for i in 0..count {
+        let off = 32 + i * 64;
+        if clean.len() < off + 64 { break; }
+        let block_hex = &clean[off..off+32];
+        let tx_hex = &clean[off+32..off+64];
+        let mut block_b = hex::decode(block_hex).ok()?;
+        block_b.reverse();
+        let mut tx_b = hex::decode(tx_hex).ok()?;
+        tx_b.reverse();
+        if block_b.len() < 8 || tx_b.len() < 8 { return None; }
+        let mut bl = [0u8;8]; bl.copy_from_slice(&block_b[0..8]);
+        let mut txl = [0u8;8]; txl.copy_from_slice(&tx_b[0..8]);
+        pools.push((u64::from_be_bytes(bl), u64::from_be_bytes(txl)));
+    }
+    Some((pools.len(), pools))
+}
+
+/// Decode pool details as per AMM pool decoder
+fn decode_pool_details(data_hex: &str) -> Option<( (u64,u64), (u64,u64), u64, u64, u64, String )> {
+    if data_hex == "0x" { return None; }
+    let bytes = hex::decode(data_hex.strip_prefix("0x").unwrap_or(data_hex)).ok()?;
+    fn u64_le(b:&[u8], o:usize)->Option<u64>{ if b.len()<o+8 {None} else { let mut x=[0u8;8]; x.copy_from_slice(&b[o..o+8]); Some(u64::from_le_bytes(x)) } }
+    let t0 = (u64_le(&bytes,0)?, u64_le(&bytes,16)?);
+    let t1 = (u64_le(&bytes,32)?, u64_le(&bytes,48)?);
+    let a0 = u64_le(&bytes,64)?;
+    let a1 = u64_le(&bytes,80)?;
+    let supply = u64_le(&bytes,96)?;
+    let name = if bytes.len()>116 { String::from_utf8_lossy(&bytes[116..]).to_string() } else { String::new() };
+    Some((t0,t1,a0,a1,supply,name))
 }
 
 /// Parse simulation parameters
@@ -1990,6 +2085,56 @@ async fn main() -> Result<()> {
                     println!("{}", serde_json::to_string_pretty(&result)?);
                 },
             }
+        },
+        Commands::Amm { command } => match command {
+            AmmCommands::GetAllPools { factory_id, raw } => {
+                let (block, tx) = parse_alkane_id_u64(&factory_id)?;
+                let (id_hex, params_hex) = build_simulate_params(block, tx, "3")?; // FACTORY GET_ALL_POOLS
+                let result = rpc_client._call("alkanes_simulate", serde_json::json!([id_hex, params_hex])).await?;
+                let data_hex = result.get("execution").and_then(|e| e.get("data")).and_then(|v| v.as_str()).unwrap_or("0x");
+                if let Some((count, pools)) = decode_get_all_pools(data_hex) {
+                    if raw { println!("{}", serde_json::to_string_pretty(&serde_json::json!({"count":count,"pools":pools.iter().map(|(b,t)| format!("{}:{}",b,t)).collect::<Vec<_>>() }))?); }
+                    else {
+                        println!("Found {} pools", count);
+                        for (b,t) in pools { println!("- {}:{}", b, t); }
+                    }
+                } else {
+                    println!("No pools found or failed to decode");
+                }
+            },
+            AmmCommands::AllPoolsDetails { factory_id, raw } => {
+                let (block, tx) = parse_alkane_id_u64(&factory_id)?;
+                let (id_hex, params_hex) = build_simulate_params(block, tx, "3")?;
+                let result = rpc_client._call("alkanes_simulate", serde_json::json!([id_hex, params_hex])).await?;
+                let data_hex = result.get("execution").and_then(|e| e.get("data")).and_then(|v| v.as_str()).unwrap_or("0x");
+                let mut out = Vec::new();
+                if let Some((_, pools)) = decode_get_all_pools(data_hex) {
+                    for (pb, pt) in pools {
+                        let (pid_hex, pparams_hex) = build_simulate_params(pb, pt, "999")?; // POOL_DETAILS
+                        if let Ok(res) = rpc_client._call("alkanes_simulate", serde_json::json!([pid_hex, pparams_hex])).await {
+                            if let Some(data) = res.get("execution").and_then(|e| e.get("data")).and_then(|v| v.as_str()) {
+                                if let Some(((t0b,t0t),(t1b,t1t),a0,a1,supply,name)) = decode_pool_details(data) {
+                                    out.push(serde_json::json!({
+                                        "poolId": format!("{}:{}", pb, pt),
+                                        "token0": {"block": t0b, "tx": t0t},
+                                        "token1": {"block": t1b, "tx": t1t},
+                                        "token0Amount": a0,
+                                        "token1Amount": a1,
+                                        "tokenSupply": supply,
+                                        "poolName": name,
+                                    }));
+                                }
+                            }
+                        }
+                    }
+                }
+                let out_json = serde_json::json!({"count": out.len(), "pools": out});
+                if raw { println!("{}", serde_json::to_string_pretty(&out_json)?); }
+                else {
+                    println!("Pools with details: {}", out.len());
+                    println!("{}", serde_json::to_string_pretty(&out_json)?);
+                }
+            },
         },
         Commands::Walletinfo { raw } => {
             if let Some(wm) = &wallet_manager {

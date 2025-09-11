@@ -73,6 +73,9 @@ pub enum Commands {
     /// Metashrew subcommands
     #[command(subcommand)]
     Metashrew(MetashrewCommands),
+    /// AMM simulation utilities
+    #[command(subcommand)]
+    Amm(AmmCommands),
 }
 
 /// Metashrew subcommands
@@ -488,6 +491,18 @@ pub enum Alkanes {
         #[arg(long)]
         raw: bool,
     },
+    /// Simulate by sending a raw request object to alkanes_simulate
+    SimulateRaw {
+        /// JSON string request or @path/to/request.json
+        #[arg(long)]
+        request: Option<String>,
+        /// File path to JSON request (alternative to --request)
+        #[arg(long)]
+        request_file: Option<String>,
+        /// Show raw JSON output
+        #[arg(long)]
+        raw: bool,
+    },
     /// Get the sequence for an outpoint
     Sequence {
         /// The outpoint to get the sequence for
@@ -524,6 +539,27 @@ pub enum Alkanes {
     GetBalance {
         /// The address to get the balance for
         address: Option<String>,
+        /// Show raw JSON output
+        #[arg(long)]
+        raw: bool,
+    },
+}
+
+/// AMM simulation subcommands
+#[derive(Subcommand, Debug, Clone, Serialize, Deserialize)]
+pub enum AmmCommands {
+    /// List all pools (by factory contract) via simulate
+    GetAllPools {
+        /// Factory alkane ID (format: block:tx)
+        factory_id: String,
+        /// Show raw JSON output
+        #[arg(long)]
+        raw: bool,
+    },
+    /// List all pools with decoded details via simulate
+    AllPoolsDetails {
+        /// Factory alkane ID (format: block:tx)
+        factory_id: String,
         /// Show raw JSON output
         #[arg(long)]
         raw: bool,

@@ -13,13 +13,15 @@ use serde_json::json;
 
 mod commands;
 mod pretty_print;
-use commands::{Alkanes, AlkanesExecute, Commands, DeezelCommands, MetashrewCommands, Protorunes, Runestone, WalletCommands};
+use commands::{Alkanes, AlkanesExecute, Commands, DeezelCommands, MetashrewCommands, Protorunes, Runestone, WalletCommands, AmmCommands};
 use deezel_common::alkanes;
 use pretty_print::*;
 
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
+    // Load .env if present
+    let _ = dotenvy::dotenv();
     // Parse command-line arguments
     let args = DeezelCommands::parse();
 
@@ -46,6 +48,7 @@ async fn execute_command<T: System + SystemOrd + UtxoProvider>(system: &mut T, c
         Commands::Ord(cmd) => execute_ord_command(system.provider(), cmd.into()).await,
         Commands::Esplora(cmd) => execute_esplora_command(system.provider(), cmd.into()).await,
         Commands::Metashrew(cmd) => execute_metashrew_command(system.provider(), cmd).await,
+        Commands::Amm(cmd) => execute_amm_command(system.provider(), cmd).await,
     }
 }
 
@@ -67,6 +70,132 @@ async fn execute_metashrew_command(provider: &dyn DeezelProvider, command: Metas
             };
             let root = provider.get_state_root(param).await?;
             println!("{root}");
+        }
+    }
+    Ok(())
+}
+
+fn parse_alkane_id_u64(id: &str) -> anyhow::Result<(u64, u64)> {
+    let parts: Vec<&str> = id.split(':').collect();
+    if parts.len() != 2 { return Err(anyhow::anyhow!("Invalid alkane ID format. Expected 'block:tx'")); }
+    Ok((parts[0].parse()?, parts[1].parse()?))
+}
+
+fn decode_get_all_pools(data_hex: &str) -> Option<(usize, Vec<(u64, u64)>)> {
+    fn strip_0x(s: &str) -> &str { s.strip_prefix("0x").unwrap_or(s) }
+    let clean = strip_0x(data_hex);
+    if clean.len() < 32 { return None; }
+    let mut count_bytes = hex::decode(&clean[0..32]).ok()?; count_bytes.reverse();
+    let count = u128::from_str_radix(&hex::encode(count_bytes), 16).ok()? as usize;
+    let mut pools = Vec::new();
+    for i in 0..count {
+        let off = 32 + i * 64; if clean.len() < off + 64 { break; }
+        let block_hex = &clean[off..off+32]; let tx_hex = &clean[off+32..off+64];
+        let mut block_b = hex::decode(block_hex).ok()?; block_b.reverse();
+        let mut tx_b = hex::decode(tx_hex).ok()?; tx_b.reverse();
+        if block_b.len() < 8 || tx_b.len() < 8 { return None; }
+        // After reversing to big-endian, the low 8 bytes are at the tail
+        let mut bl=[0u8;8]; bl.copy_from_slice(&block_b[block_b.len()-8..]);
+        let mut tl=[0u8;8]; tl.copy_from_slice(&tx_b[tx_b.len()-8..]);
+        pools.push((u64::from_be_bytes(bl), u64::from_be_bytes(tl)));
+    }
+    Some((pools.len(), pools))
+}
+
+fn decode_pool_details(data_hex: &str) -> Option<((u64,u64),(u64,u64),u64,u64,u64,String)> {
+    if data_hex == "0x" { return None; }
+    let bytes = hex::decode(data_hex.strip_prefix("0x").unwrap_or(data_hex)).ok()?;
+    fn u64_le(b:&[u8], o:usize)->Option<u64>{ if b.len()<o+8 {None} else { let mut x=[0u8;8]; x.copy_from_slice(&b[o..o+8]); Some(u64::from_le_bytes(x)) } }
+    let t0 = (u64_le(&bytes,0)?, u64_le(&bytes,16)?);
+    let t1 = (u64_le(&bytes,32)?, u64_le(&bytes,48)?);
+    let a0 = u64_le(&bytes,64)?; let a1 = u64_le(&bytes,80)?; let supply = u64_le(&bytes,96)?;
+    let name = if bytes.len()>116 { String::from_utf8_lossy(&bytes[116..]).to_string() } else { String::new() };
+    Some((t0,t1,a0,a1,supply,name))
+}
+
+async fn execute_amm_command(
+    provider: &dyn DeezelProvider,
+    command: AmmCommands,
+) -> anyhow::Result<()> {
+    match command {
+        AmmCommands::GetAllPools { factory_id, raw } => {
+            let (b,t) = parse_alkane_id_u64(&factory_id)?;
+            let url = std::env::var("SANDSHREW_RPC_URL")
+                .or_else(|_| std::env::var("METASHREW_RPC_URL"))
+                .unwrap_or_else(|_| "http://localhost:18888".to_string());
+            let params = serde_json::json!([{
+                "alkanes": [],
+                "transaction": "0x",
+                "block": "0x",
+                "height": "20000",
+                "txindex": 0,
+                "target": { "block": b.to_string(), "tx": t.to_string() },
+                "inputs": ["3"],
+                "pointer": 0,
+                "refundPointer": 0,
+                "vout": 0
+            }]);
+            let result = provider.call(&url, "alkanes_simulate", params, 1).await?;
+            let data_hex = result.get("execution").and_then(|e| e.get("data")).and_then(|v| v.as_str()).unwrap_or("0x");
+            if let Some((count, pools)) = decode_get_all_pools(data_hex) {
+                if raw { println!("{}", serde_json::to_string_pretty(&serde_json::json!({"count":count,"pools":pools.iter().map(|(bb,tt)| format!("{}:{}",bb,tt)).collect::<Vec<_>>() }))?); }
+                else { println!("Found {} pools", count); for (pb,pt) in pools { println!("- {}:{}", pb, pt); } }
+            } else { println!("No pools found or failed to decode"); }
+        }
+        AmmCommands::AllPoolsDetails { factory_id, raw } => {
+            let (b,t) = parse_alkane_id_u64(&factory_id)?;
+            let url = std::env::var("SANDSHREW_RPC_URL")
+                .or_else(|_| std::env::var("METASHREW_RPC_URL"))
+                .unwrap_or_else(|_| "http://localhost:18888".to_string());
+            let params = serde_json::json!([{
+                "alkanes": [],
+                "transaction": "0x",
+                "block": "0x",
+                "height": "20000",
+                "txindex": 0,
+                "target": { "block": b.to_string(), "tx": t.to_string() },
+                "inputs": ["3"],
+                "pointer": 0,
+                "refundPointer": 0,
+                "vout": 0
+            }]);
+            let result = provider.call(&url, "alkanes_simulate", params, 1).await?;
+            let data_hex = result.get("execution").and_then(|e| e.get("data")).and_then(|v| v.as_str()).unwrap_or("0x");
+            let mut out = Vec::new();
+            if let Some((_, pools)) = decode_get_all_pools(data_hex) {
+                for (pb, pt) in pools {
+                    let pparams = serde_json::json!([{
+                        "alkanes": [],
+                        "transaction": "0x",
+                        "block": "0x",
+                        "height": "20000",
+                        "txindex": 0,
+                        "target": { "block": pb.to_string(), "tx": pt.to_string() },
+                        "inputs": ["999"],
+                        "pointer": 0,
+                        "refundPointer": 0,
+                        "vout": 0
+                    }]);
+                    if let Ok(res) = provider.call(&url, "alkanes_simulate", pparams, 1).await { // POOL_DETAILS
+                        if let Some(data) = res.get("execution").and_then(|e| e.get("data")).and_then(|v| v.as_str()) {
+                            if let Some(((t0b,t0t),(t1b,t1t),a0,a1,supply,name)) = decode_pool_details(data) {
+                                out.push(serde_json::json!({
+                                    "poolId": format!("{}:{}", pb, pt),
+                                    "token0": {"block": t0b, "tx": t0t},
+                                    "token1": {"block": t1b, "tx": t1t},
+                                    "token0Amount": a0,
+                                    "token1Amount": a1,
+                                    "tokenSupply": supply,
+                                    "poolName": name,
+                                }));
+                            }
+                        }
+                    }
+                }
+            }
+            let out_json = serde_json::json!({"count": out.len(), "pools": out});
+            if raw { println!("{}", serde_json::to_string_pretty(&out_json)?); }
+            else { println!("Pools with details: {}", out.len()); println!("{}", serde_json::to_string_pretty(&out_json)?); }
         }
     }
     Ok(())
@@ -222,6 +351,38 @@ async fn execute_alkanes_command<T: System>(system: &mut T, command: Alkanes) ->
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
                 println!("Simulation result: {}", serde_json::to_string_pretty(&result)?);
+            }
+            Ok(())
+        },
+        Alkanes::SimulateRaw { request, request_file, raw } => {
+            // Load request JSON from --request or --request-file
+            let req_str = if let Some(r) = request {
+                if let Some(path) = r.strip_prefix('@') { std::fs::read_to_string(path)? } else { r }
+            } else if let Some(path) = request_file {
+                std::fs::read_to_string(path)?
+            } else {
+                return Err(anyhow::anyhow!("Provide --request '<JSON>' or --request-file <path>"));
+            };
+
+            let json_val: serde_json::Value = serde_json::from_str(&req_str)?;
+            // Ensure it's an array (params array for JSON-RPC)
+            let params = match json_val {
+                serde_json::Value::Array(a) => serde_json::Value::Array(a),
+                _ => serde_json::Value::Array(vec![json_val]),
+            };
+
+            // Use single Sandshrew/Metashrew URL (SANDSHREW_RPC_URL env/flag already wired into provider)
+            let result = system.provider().call(
+                &system.provider().get_esplora_api_url().unwrap_or_else(|| "http://localhost:18888".to_string()),
+                "alkanes_simulate",
+                params,
+                1,
+            ).await?;
+
+            if raw {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                println!("{}", serde_json::to_string_pretty(&result)?);
             }
             Ok(())
         },

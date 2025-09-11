@@ -14,6 +14,7 @@ use std::{vec, vec::Vec, string::String};
 use alloc::{vec, vec::Vec, string::String};
 
 use crate::rpc::RpcClient;
+use crate::alkanes_pb;
 use crate::wallet::WalletManager;
 use super::types::*;
 
@@ -32,6 +33,13 @@ impl<P: crate::traits::DeezelProvider> SimulationManager<P> {
         }
     }
 
+    /// Call alkanes_simulate with a raw params array (object-style request)
+    /// The `params` should be a JSON array containing the simulate request object,
+    /// e.g. `[ { target: { block: "4", tx: "65522" }, inputs: ["3"], ... } ]`.
+    pub async fn simulate_raw_request(&self, params: serde_json::Value) -> Result<serde_json::Value> {
+        self.rpc_client.metashrew_call("alkanes_simulate", params).await
+    }
+
     /// Simulate an advanced alkanes operation
     pub async fn simulate_advanced(&self, params: SimulationParams) -> Result<serde_json::Value> {
         info!("Simulating operation on target {}:{}", params.target.block, params.target.tx);
@@ -46,14 +54,9 @@ impl<P: crate::traits::DeezelProvider> SimulationManager<P> {
         // 3. Execute the simulation with the specified decoder
         // 4. Return detailed simulation results
         
-        let simulation_params = format!("{}:{}:{}",
-            params.target.block,
-            params.target.tx,
-            params.inputs.join(":")
-        );
-        
-        let contract_id = format!("{}:{}", params.target.block, params.target.tx);
-        self.rpc_client.simulate(&contract_id, Some(&simulation_params)).await
+        let inputs_str = params.inputs.join(":");
+        let (id_hex, params_hex) = build_simulate_params(params.target.block, params.target.tx, &inputs_str)?;
+        self.rpc_client.metashrew_call("alkanes_simulate", serde_json::json!([id_hex, params_hex])).await
     }
 
     /// Simulate a contract execution
@@ -65,9 +68,9 @@ impl<P: crate::traits::DeezelProvider> SimulationManager<P> {
         info!("Simulating contract execution for {}:{}", contract_id.block, contract_id.tx);
         debug!("Calldata: {:?}", calldata);
         
-        let contract_id_str = format!("{}:{}", contract_id.block, contract_id.tx);
         let calldata_str = calldata.join(":");
-        self.rpc_client.simulate(&contract_id_str, Some(&calldata_str)).await
+        let (id_hex, params_hex) = build_simulate_params(contract_id.block, contract_id.tx, &calldata_str)?;
+        self.rpc_client.metashrew_call("alkanes_simulate", serde_json::json!([id_hex, params_hex])).await
     }
 
     /// Simulate a token transfer
@@ -87,9 +90,9 @@ impl<P: crate::traits::DeezelProvider> SimulationManager<P> {
             to.to_string(),
             amount.to_string()];
         
-        let token_id_str = format!("{}:{}", token_id.block, token_id.tx);
         let inputs_str = inputs.join(":");
-        self.rpc_client.simulate(&token_id_str, Some(&inputs_str)).await
+        let (id_hex, params_hex) = build_simulate_params(token_id.block, token_id.tx, &inputs_str)?;
+        self.rpc_client.metashrew_call("alkanes_simulate", serde_json::json!([id_hex, params_hex])).await
     }
 
     /// Simulate a swap operation
@@ -109,9 +112,9 @@ impl<P: crate::traits::DeezelProvider> SimulationManager<P> {
             input_amount.to_string(),
             min_output.to_string()];
         
-        let pool_id_str = format!("{}:{}", pool_id.block, pool_id.tx);
         let inputs_str = inputs.join(":");
-        self.rpc_client.simulate(&pool_id_str, Some(&inputs_str)).await
+        let (id_hex, params_hex) = build_simulate_params(pool_id.block, pool_id.tx, &inputs_str)?;
+        self.rpc_client.metashrew_call("alkanes_simulate", serde_json::json!([id_hex, params_hex])).await
     }
 
     /// Simulate liquidity addition
@@ -133,9 +136,9 @@ impl<P: crate::traits::DeezelProvider> SimulationManager<P> {
             ));
         }
         
-        let pool_id_str = format!("{}:{}", pool_id.block, pool_id.tx);
         let inputs_str = inputs.join(":");
-        self.rpc_client.simulate(&pool_id_str, Some(&inputs_str)).await
+        let (id_hex, params_hex) = build_simulate_params(pool_id.block, pool_id.tx, &inputs_str)?;
+        self.rpc_client.metashrew_call("alkanes_simulate", serde_json::json!([id_hex, params_hex])).await
     }
 
     /// Simulate liquidity removal
@@ -150,9 +153,9 @@ impl<P: crate::traits::DeezelProvider> SimulationManager<P> {
         let inputs = ["remove_liquidity".to_string(),
             lp_token_amount.to_string()];
         
-        let pool_id_str = format!("{}:{}", pool_id.block, pool_id.tx);
         let inputs_str = inputs.join(":");
-        self.rpc_client.simulate(&pool_id_str, Some(&inputs_str)).await
+        let (id_hex, params_hex) = build_simulate_params(pool_id.block, pool_id.tx, &inputs_str)?;
+        self.rpc_client.metashrew_call("alkanes_simulate", serde_json::json!([id_hex, params_hex])).await
     }
 
     /// Get simulation gas estimate
@@ -221,6 +224,22 @@ impl<P: crate::traits::DeezelProvider> SimulationManager<P> {
         
         Ok(true)
     }
+}
+
+fn build_simulate_params(block: u64, tx: u64, params: &str) -> Result<(String, String)> {
+    use protobuf::Message;
+    let mut alkane_id = alkanes_pb::AlkaneId::new();
+    let mut block_u = alkanes_pb::Uint128::new();
+    block_u.lo = block;
+    let mut tx_u = alkanes_pb::Uint128::new();
+    tx_u.lo = tx;
+    alkane_id.block = protobuf::MessageField::some(block_u);
+    alkane_id.tx = protobuf::MessageField::some(tx_u);
+    let mut req = alkanes_pb::BytecodeRequest::new();
+    req.id = protobuf::MessageField::some(alkane_id);
+    let id_hex = format!("0x{}", hex::encode(req.write_to_bytes()?));
+    let params_hex = if params.is_empty() { "0x".to_string() } else { format!("0x{}", hex::encode(params.as_bytes())) };
+    Ok((id_hex, params_hex))
 }
 
 /// Parse simulation inputs from comma-separated string
