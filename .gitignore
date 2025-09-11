@@ -1,2 +1,6 @@
-reference
+*.swp
+*.swo
+*/reference/*
+/reference/
 /target
+.env
