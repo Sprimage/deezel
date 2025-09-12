@@ -667,16 +667,19 @@ fn parse_alkane_id_from_hex(hex_str: &str) -> Option<TypesAlkaneId> {
     tx_bytes.reverse();
 
     // Take low 8 bytes to fit into u64, matching provider's use of lo parts
+    // After reversing to big-endian, the low 8 bytes are at the tail
     let block = {
-        let slice = if block_bytes.len() >= 8 { &block_bytes[0..8] } else { return None; };
+        if block_bytes.len() < 8 { return None; }
+        let start = block_bytes.len() - 8;
         let mut buf = [0u8; 8];
-        buf.copy_from_slice(slice);
+        buf.copy_from_slice(&block_bytes[start..]);
         u64::from_be_bytes(buf)
     };
     let tx = {
-        let slice = if tx_bytes.len() >= 8 { &tx_bytes[0..8] } else { return None; };
+        if tx_bytes.len() < 8 { return None; }
+        let start = tx_bytes.len() - 8;
         let mut buf = [0u8; 8];
-        buf.copy_from_slice(slice);
+        buf.copy_from_slice(&tx_bytes[start..]);
         u64::from_be_bytes(buf)
     };
 
