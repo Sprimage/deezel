@@ -35,22 +35,25 @@ use super::simulation::SimulationManager;
 
 /// AMM operations manager that leverages enhanced execute functionality
 pub struct AmmManager<P: DeezelProvider> {
+    /// Underlying provider used for RPC calls (simulate, etc.)
+    provider: Arc<P>,
     executor: Arc<EnhancedAlkanesExecutor<P>>,
     simulation: Option<Arc<SimulationManager<P>>>,
 }
 
 impl<P: DeezelProvider> AmmManager<P> {
     /// Create a new AMM manager
-    pub fn new(executor: Arc<EnhancedAlkanesExecutor<P>>) -> Self {
-        Self { executor, simulation: None }
+    pub fn new(provider: Arc<P>, executor: Arc<EnhancedAlkanesExecutor<P>>) -> Self {
+        Self { provider, executor, simulation: None }
     }
 
     /// Create a new AMM manager with simulation capability
     pub fn new_with_simulation(
+        provider: Arc<P>,
         executor: Arc<EnhancedAlkanesExecutor<P>>,
         simulation: Arc<SimulationManager<P>>,
     ) -> Self {
-        Self { executor, simulation: Some(simulation) }
+        Self { provider, executor, simulation: Some(simulation) }
     }
 
     /// Create a new liquidity pool using enhanced execute functionality
@@ -412,9 +415,7 @@ impl<P: DeezelProvider> AmmManager<P> {
     /// Get all pools via raw simulate request (object-style), using a single Sandshrew URL through provider
     /// This mirrors the TS request you shared and returns decoded IDs.
     pub async fn get_all_pools_via_raw_simulate(&self, factory_block: String, factory_tx: String) -> Result<GetAllPoolsResult> {
-        let sim = self.simulation.as_ref()
-            .ok_or_else(|| crate::DeezelError::Other("Simulation manager not configured".to_string()))?;
-
+        // Build request identical to CLI's GetAllPools
         let params = serde_json::json!([{
             "alkanes": [],
             "transaction": "0x",
@@ -428,7 +429,20 @@ impl<P: DeezelProvider> AmmManager<P> {
             "vout": 0
         }]);
 
-        let result = sim.simulate_raw_request(params).await?;
+        let url = {
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                std::env::var("SANDSHREW_RPC_URL")
+                    .or_else(|_| std::env::var("METASHREW_RPC_URL"))
+                    .unwrap_or_else(|_| "http://localhost:18888".to_string())
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                "http://localhost:18888".to_string()
+            }
+        };
+
+        let result = self.provider.call(&url, "alkanes_simulate", params, 1).await?;
         let data_hex = result
             .get("execution")
             .and_then(|e| e.get("data"))
@@ -442,8 +456,18 @@ impl<P: DeezelProvider> AmmManager<P> {
     /// For each pool id returned by get_all_pools_via_raw_simulate, fetch details via raw simulate
     pub async fn get_all_pools_details_via_raw_simulate(&self, factory_block: String, factory_tx: String) -> Result<AllPoolsDetailsResult> {
         let all = self.get_all_pools_via_raw_simulate(factory_block, factory_tx).await?;
-        let sim = self.simulation.as_ref()
-            .ok_or_else(|| crate::DeezelError::Other("Simulation manager not configured".to_string()))?;
+        let url = {
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                std::env::var("SANDSHREW_RPC_URL")
+                    .or_else(|_| std::env::var("METASHREW_RPC_URL"))
+                    .unwrap_or_else(|_| "http://localhost:18888".to_string())
+            }
+            #[cfg(target_arch = "wasm32")]
+            {
+                "http://localhost:18888".to_string()
+            }
+        };
 
         let mut out = Vec::new();
         for id in &all.pools {
@@ -460,7 +484,7 @@ impl<P: DeezelProvider> AmmManager<P> {
                 "vout": 0
             }]);
 
-            if let Ok(res) = sim.simulate_raw_request(params).await {
+            if let Ok(res) = self.provider.call(&url, "alkanes_simulate", params, 1).await {
                 if let Some(data) = res.get("execution").and_then(|e| e.get("data")).and_then(|v| v.as_str()) {
                     if let Some(details) = decode_pool_details(data) {
                         out.push(PoolDetailsWithId {
