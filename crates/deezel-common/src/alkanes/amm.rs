@@ -35,25 +35,44 @@ use super::simulation::SimulationManager;
 
 /// AMM operations manager that leverages enhanced execute functionality
 pub struct AmmManager<P: DeezelProvider> {
-    /// Underlying provider used for RPC calls (simulate, etc.)
+    /// Underlying provider used for RPC calls (simulate, execute, etc.)
     provider: Arc<P>,
-    executor: Arc<EnhancedAlkanesExecutor<P>>,
     simulation: Option<Arc<SimulationManager<P>>>,
 }
 
 impl<P: DeezelProvider> AmmManager<P> {
+    async fn execute_enhanced(&self, params: EnhancedExecuteParams) -> Result<EnhancedExecuteResult> {
+        use crate::alkanes::types::ExecutionState;
+        // Create a temporary executor bound to the provider for each call
+        // We need a &mut dyn DeezelProvider, so clone_box to a boxed provider, then borrow mut
+        let mut boxed = self.provider.clone_box();
+        let mut exec = super::execute::EnhancedAlkanesExecutor::new(&mut *boxed);
+        let state = exec.execute(params.clone()).await?;
+        match state {
+            ExecutionState::ReadyToSign(s) => exec.resume_execution(s, &params).await,
+            ExecutionState::ReadyToSignCommit(s) => {
+                let state2 = exec.resume_commit_execution(s).await?;
+                if let ExecutionState::ReadyToSignReveal(s2) = state2 {
+                    exec.resume_reveal_execution(s2).await
+                } else {
+                    Err(crate::DeezelError::Other("Unexpected state after commit".to_string()))
+                }
+            }
+            ExecutionState::ReadyToSignReveal(s) => exec.resume_reveal_execution(s).await,
+            ExecutionState::Complete(result) => Ok(result),
+        }
+    }
     /// Create a new AMM manager
-    pub fn new(provider: Arc<P>, executor: Arc<EnhancedAlkanesExecutor<P>>) -> Self {
-        Self { provider, executor, simulation: None }
+    pub fn new(provider: Arc<P>) -> Self {
+        Self { provider, simulation: None }
     }
 
     /// Create a new AMM manager with simulation capability
     pub fn new_with_simulation(
         provider: Arc<P>,
-        executor: Arc<EnhancedAlkanesExecutor<P>>,
         simulation: Arc<SimulationManager<P>>,
     ) -> Self {
-        Self { provider, executor, simulation: Some(simulation) }
+        Self { provider, simulation: Some(simulation) }
     }
 
     /// Create a new liquidity pool using enhanced execute functionality
@@ -104,6 +123,7 @@ impl<P: DeezelProvider> AmmManager<P> {
         let execute_params = EnhancedExecuteParams {
             fee_rate: params.fee_rate,
             to_addresses: vec![], // Will be populated with default addresses
+            from_addresses: None,
             change_address: None,
             input_requirements,
             protostones,
@@ -112,11 +132,10 @@ impl<P: DeezelProvider> AmmManager<P> {
             trace_enabled: true,
             mine_enabled: false,
             auto_confirm: true,
-            rebar: false,
         };
         
         // Execute pool creation using enhanced execute
-        let result = self.executor.execute(execute_params).await?;
+        let result = self.execute_enhanced(execute_params).await?;
         
         info!("Liquidity pool created successfully using enhanced execute");
         info!("Pool creation reveal TXID: {}", result.reveal_txid);
@@ -198,6 +217,7 @@ impl<P: DeezelProvider> AmmManager<P> {
         let execute_params = EnhancedExecuteParams {
             fee_rate: params.fee_rate,
             to_addresses: vec![], // Will be populated with default addresses
+            from_addresses: None,
             change_address: None,
             input_requirements,
             protostones,
@@ -206,11 +226,10 @@ impl<P: DeezelProvider> AmmManager<P> {
             trace_enabled: true,
             mine_enabled: false,
             auto_confirm: true,
-            rebar: false,
         };
         
         // Execute liquidity addition using enhanced execute
-        let result = self.executor.execute(execute_params).await?;
+        let result = self.execute_enhanced(execute_params).await?;
         
         info!("Liquidity added successfully using enhanced execute");
         info!("Add liquidity reveal TXID: {}", result.reveal_txid);
@@ -265,6 +284,7 @@ impl<P: DeezelProvider> AmmManager<P> {
         let execute_params = EnhancedExecuteParams {
             fee_rate: params.fee_rate,
             to_addresses: vec![], // Will be populated with default addresses
+            from_addresses: None,
             change_address: None,
             input_requirements,
             protostones,
@@ -273,11 +293,10 @@ impl<P: DeezelProvider> AmmManager<P> {
             trace_enabled: true,
             mine_enabled: false,
             auto_confirm: true,
-            rebar: false,
         };
         
         // Execute liquidity removal using enhanced execute
-        let result = self.executor.execute(execute_params).await?;
+        let result = self.execute_enhanced(execute_params).await?;
         
         info!("Liquidity removed successfully using enhanced execute");
         info!("Remove liquidity reveal TXID: {}", result.reveal_txid);
@@ -349,6 +368,7 @@ impl<P: DeezelProvider> AmmManager<P> {
         let execute_params = EnhancedExecuteParams {
             fee_rate: params.fee_rate,
             to_addresses: vec![], // Will be populated with default addresses
+            from_addresses: None,
             change_address: None,
             input_requirements,
             protostones,
@@ -357,11 +377,10 @@ impl<P: DeezelProvider> AmmManager<P> {
             trace_enabled: true,
             mine_enabled: false,
             auto_confirm: true,
-            rebar: false,
         };
         
         // Execute token swap using enhanced execute
-        let result = self.executor.execute(execute_params).await?;
+        let result = self.execute_enhanced(execute_params).await?;
         
         info!("Token swap completed successfully using enhanced execute");
         info!("Swap reveal TXID: {}", result.reveal_txid);
