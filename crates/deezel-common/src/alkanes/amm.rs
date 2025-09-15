@@ -497,6 +497,38 @@ impl<P: DeezelProvider> AmmManager<P> {
 
         Ok(AllPoolsDetailsResult { count: out.len(), pools: out })
     }
+
+    /// Get a single pool's details via raw simulate request (object-style)
+    /// using the provided Sandshrew/Metashrew URL and target pool id
+    pub async fn get_pool_details_via_raw_simulate(&self, url: &str, pool_block: String, pool_tx: String) -> Result<PoolDetailsResult> {
+        info!(
+            "Getting pool details via raw simulate for: {}:{}",
+            pool_block, pool_tx
+        );
+
+        let params = serde_json::json!([{
+            "alkanes": [],
+            "transaction": "0x",
+            "block": "0x",
+            "height": "20000",
+            "txindex": 0,
+            "target": { "block": pool_block, "tx": pool_tx },
+            "inputs": [POOL_OPCODE_POOL_DETAILS.to_string()],
+            "pointer": 0,
+            "refundPointer": 0,
+            "vout": 0
+        }]);
+
+        let res = self.provider.call(url, "alkanes_simulate", params, 1).await?;
+        let data_hex = res
+            .get("execution")
+            .and_then(|e| e.get("data"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("0x");
+
+        decode_pool_details(data_hex)
+            .ok_or_else(|| crate::DeezelError::Other("Failed to decode pool_details result".to_string()))
+    }
 }
 
 /// Operation codes for pool interactions
