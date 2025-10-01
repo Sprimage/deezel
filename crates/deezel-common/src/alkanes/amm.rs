@@ -576,9 +576,9 @@ pub struct PoolDetailsWithId {
     pub pool_id: TypesAlkaneId,
     pub token0: TypesAlkaneId,
     pub token1: TypesAlkaneId,
-    pub token0_amount: u64,
-    pub token1_amount: u64,
-    pub token_supply: u64,
+    pub token0_amount: u128,
+    pub token1_amount: u128,
+    pub token_supply: u128,
     pub pool_name: String,
 }
 
